@@ -51,11 +51,7 @@ if not previous_volatility_file_path:
 market_lot_file = pd.read_csv(market_lot_file_path)
 #=======================================================================================
 #Getting the instruments and expiry dates from Groww
-@st.cache_data
-def load_instruments():
-    return groww.get_all_instruments()
-
-instruments_df = load_instruments()
+instruments_df = pd.read_csv("instruments.csv")
 #========================================================================================
 #Getting the list of all the instruments
 underlying={}
