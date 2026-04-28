@@ -6,8 +6,6 @@ import math
 from scipy.stats import norm #Used for getting z values of the confidence level
 from pathlib import Path #Used for getting file paths
 from scipy.stats import genpareto
-import tkinter as tk
-from tkinter import ttk
 from tkcalendar import DateEntry
 import xml.etree.ElementTree as ET
 from lxml import etree
