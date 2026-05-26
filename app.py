@@ -27,6 +27,7 @@ user_secret = os.getenv("GROWW_SECRET")
 
 access_token = GrowwAPI.get_access_token(api_key = user_api_key, secret = user_secret) 
 groww = GrowwAPI(access_token)
+
 #======================================================================================
 #Reading previous day Daily Volatility Report
 previous_volatility_file_path = next(folder.glob("FOVOLT*"), None)
@@ -51,10 +52,24 @@ if not previous_volatility_file_path:
 market_lot_file = pd.read_csv(market_lot_file_path)
 #=======================================================================================
 #Getting the instruments and expiry dates from Groww
-instruments_df = pd.read_csv("instruments.csv")
+instruments_df = groww.get_all_instruments()
+instruments_df.to_csv(storage_path + "/instruments.csv", index=False)
+#instruments_df.to_pickle(storage_path + "/instruments.pkl")
+#with gzip.open(storage_path + "/instruments.pkl.gz", "wb") as f:
+    #pickle.dump(instruments_df, f)
+
+
+
+instruments_df = instruments_df.dropna(subset=['expiry_date']).copy()
+instruments_df['expiry_date_int'] = instruments_df['expiry_date'].str.replace("-", "").astype(int)
+instruments_df = instruments_df[(instruments_df['expiry_date_int'] >= today) & (instruments_df['segment'] =="FNO")]
+
+cols=['exchange', 'instrument_type', 'underlying_symbol', 'expiry_date','strike_price']
+instruments_df = instruments_df[cols]
+#instruments_df.to_csv(storage_path + "/instruments.csv", index=False)
 #========================================================================================
 #Getting the list of all the instruments
-underlying={}
+underlying_list={}
 
 underlying_list = instruments_df[
     (instruments_df['instrument_type'] == "FUT") & 
@@ -68,54 +83,165 @@ expiry_list={}
 expiry_list = instruments_df[instruments_df['instrument_type'] == "FUT"].groupby('underlying_symbol')['expiry_date'].unique().to_dict()
 #=========================================================================================
 
-risk_free_rate_mibor=0.064
+risk_free_rate_mibor=0.0658
 #==========================================================================================
+call_df=instruments_df[instruments_df["instrument_type"] == "CE"]
+strikes_dict_c = (
+    call_df.groupby(["underlying_symbol", "expiry_date"])["strike_price"]
+    .unique()
+    .apply(lambda x: sorted(list(x)))
+    .to_dict()
+)
 
+put_df=instruments_df[instruments_df["instrument_type"] == "PE"]
+strikes_dict_p = (
+    put_df.groupby(["underlying_symbol", "expiry_date"])["strike_price"]
+    .unique()
+    .apply(lambda x: sorted(list(x)))
+    .to_dict()
+)
+#=========================================================================================
+def month_year_calculator(date):
 
+    year=str(date[2:4])
+    month=str(date[4:6])
+    if month=="01":
+        mon="JAN"
+    elif month=="02":
+        mon="FEB"
+    elif month=="03":
+        mon="MAR"
+    elif month=="04":
+        mon="APR"
+    elif month=="05":
+        mon="MAY"
+    elif month=="06":
+        mon="JUN"
+    elif month=="07":
+        mon="JUL"
+    elif month=="08":
+        mon="AUG"
+    elif month=="09":
+        mon="SEP"
+    elif month=="10":
+        mon="OCT"
+    elif month=="11":
+        mon="NOV"
+    elif month=="12":
+        mon="DEC"
+    return year,mon
+#=========================================================================================
+#Metron model to calculate the price of option
+def merton_price(S, K, T, r, q, sigma, option_type='C'):
+#"""Calculates price using Spot and Dividend Yield."""
+    d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    
+    if option_type == 'C':
+        return S * np.exp(-q * T) * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    elif option_type == 'P':
+        return K * np.exp(-r * T) * norm.cdf(-d2) - S * np.exp(-q * T) * norm.cdf(-d1)
 
 #==========================================================================================
-def run_risk_analysis(symbol, exp_date, scenario, u_specified_price, buy_sell):
+def calculate_iv_merton(target_price, S, K, T, r, q, option_type='C'):
+        """Finds IV using Spot and Dividend."""
+        func = lambda sigma: merton_price(S, K, T, r, q, sigma, option_type) - target_price
+        try:
+            if func(0.0001) * func(5.0) > 0:
+                return 0.0            
+            return brentq(func, 0.00000001, 5.0)
+        except ValueError:
+            return 0.0
+#======================================================================================
+def calculate_price_with_dividend(S, K, T, r, q, sigma, option_type='C'):
+    # Standard Black-Scholes adjusted for Dividend Yield (q)
+    d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    
+    if option_type == 'C':
+        return (S * np.exp(-q * T) * norm.cdf(d1)) - (K * np.exp(-r * T) * norm.cdf(d2))
+    elif option_type == 'P':
+        return (K * np.exp(-r * T) * norm.cdf(-d2)) - (S * np.exp(-q * T) * norm.cdf(-d1))
+#=======================================================================================
+#Calculating Composite Delta
+def calculate_composite_delta(F, K, T, r, sigma, psr_value, option_type='c'):
+    """
+    F: Current Futures Price
+    K: Strike Price
+    T: Time to Expiration (years)
+    r: MIBOR (decimal)
+    sigma: Implied Volatility (decimal)
+    psr_value: Price Scan Range in absolute terms (e.g., F * 0.10)
+    """
+    
+    # 1. Define the 7 Price Points and their Weights
+    # Weights: [Unchanged, +/- 33% PSR, +/- 67% PSR, +/- 100% PSR]
+    points = [0, 0.33, -0.33, 0.67, -0.67, 1.0, -1.0]
+    weights = [0.270, 0.217, 0.217, 0.111, 0.111, 0.037, 0.037] # Standard NSE/SPAN Weights
+    
+    composite_delta = 0.0
+    exp_rt = math.exp(-r * T)
+
+    # 2. Loop through each point to calculate individual deltas
+    for i in range(len(points)):
+        # Shift the underlying price
+        F_shifted = F + (points[i] * psr_value)
+        
+        # Calculate d1 at this shifted price
+        d1 = (math.log(F_shifted / K) + (0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+        
+        # Calculate Delta for this scenario
+        if option_type.lower() == 'c':
+            delta_i = exp_rt * norm.cdf(d1)
+        elif option_type.lower() == 'p':
+            delta_i = exp_rt * (norm.cdf(d1) - 1)
+            
+        # Add the weighted delta to the total
+        composite_delta += delta_i * weights[i]
+        
+    return composite_delta
+#==========================================================================================
+def simulate_call_with_exact_curve_slope(sim_spot, current_spot, strike, t, r, dividend, curve_fit):
+    """
+    curve_fit: array of 3 coefficients [a, b, c] from np.polyfit(strikes, ivs, 2)
+    """
+    # 1. Unpack the curve coefficients
+    a, b, c = curve_fit[0], curve_fit[1], curve_fit[2]
+    
+    # 2. Find the baseline IV for your portfolio strike right now
+    base_iv = (a * strike**2) + (b * strike) + c
+    
+    # 3. DYNAMIC EXCHANGES RULE: Find the exact slope (derivative) at YOUR strike
+    # Slope = 2 * a * K + b
+    exact_skew_slope = (2 * a * strike) + b
+    
+    # 4. Calculate the price change of the underlying
+    spot_change = sim_spot - current_spot
+    
+    # 5. Shift your IV using the exact slope derived from your curve
+    sim_iv = base_iv + (spot_change * exact_skew_slope)
+    
+    # Failsafe: Volatility cannot be negative or drop below 1%
+    sim_iv = max(sim_iv, 0.01)
+    
+    # 6. Reprice the option
+    sim_call_price = calculate_price_with_dividend(
+        sim_spot, float(strike), t, r, dividend, sim_iv, option_type='C'
+    )
+    
+    return sim_call_price, sim_iv, exact_skew_slope
+#==========================================================================================
+def run_risk_analysis_future(symbol, exp_date, scenario, u_specified_price, buy_sell):
     scenario1 = "Current SPAN"
     scenario2 = "What-if Analysis" 
-    min_date=1000000000   
-    for j in range(len(instruments_df)):
-        if symbol==instruments_df.loc[j,"underlying_symbol"] and pd.notna(instruments_df.loc[j,"expiry_date"]):
-            exp_date=instruments_df.loc[j,"expiry_date"]
-            exp_date=int(exp_date.replace("-",""))
-            min_date=int(min_date)
-            if exp_date<min_date:
-                min_date=exp_date
-                exchange=instruments_df.loc[j,"exchange"]
 
-            min_date=str(min_date)
-            year= str(min_date[2:4])   
-            month = str(min_date[4:6]) 
-            if month=="01":
-                mon="JAN"
-            elif month=="02":
-                mon="FEB"
-            elif month=="03":
-                mon="MAR"
-            elif month=="04":
-                mon="APR"
-            elif month=="05":
-                mon="MAY"
-            elif month=="06":
-                mon="JUN"
-            elif month=="07":
-                mon="JUL"
-            elif month=="08":
-                mon="AUG"
-            elif month=="09":
-                mon="SEP"
-            elif month=="10":
-                mon="OCT"
-            elif month=="11":
-                mon="NOV"
-            elif month=="12":
-                mon="DEC"
-            
-            ltp_symbol=exchange+"_"+symbol+year+mon+"FUT"
+    exp_date=int(exp_date.replace("-",""))
+    exp_date=str(exp_date)
+    year,mon=month_year_calculator(exp_date)
+    
+    exchange="NSE"
+
+    ltp_symbol=exchange+"_"+symbol+year+mon+"FUT"
         
     ltp_response = groww.get_ltp(
     segment=groww.SEGMENT_FNO,
@@ -123,28 +249,32 @@ def run_risk_analysis(symbol, exp_date, scenario, u_specified_price, buy_sell):
     )
     ltp=ltp_response[ltp_symbol]
 
-    if symbol!="SX40" and symbol!="SENSEX50":
-        if symbol=="BANKEX":
-            tic="BSE-BANK.BO"
-        elif symbol=="BANKNIFTY":
-            tic="^NSEBANK"
-        elif symbol=="FINNIFTY":
-            tic="NIFTY_FIN_SERVICE.NS"
-        elif symbol=="MIDCPNIFTY":
-            tic="NIFTY_MID_SELECT.NS"
-        elif symbol=="NIFTY":
-            tic="^NSEI"
-        elif symbol=="NIFTYNXT50":
-            tic="^NSMIDCP"
-        elif symbol=="SENSEX":
-            tic="^BSESN"
-        #elif symbol=="SENSEX50":
-            #symbol="SNSX50.BO"
-        else:
-            tic=symbol +".NS"
-        ticker = yf.Ticker(tic)
-        latest_price = ticker.history(period="5d",auto_adjust=True)["Close"].iloc[-1]
+    symbol_underlying=exchange+"_"+symbol
+    ltp_underlying=groww.get_ltp(
+    segment=groww.SEGMENT_CASH,
+    exchange_trading_symbols=symbol_underlying
+    )
+    latest_price = ltp_underlying[symbol_underlying]
 
+    min_date=1000000000   
+    for j in range(len(instruments_df)):
+        if symbol==instruments_df.loc[j,"underlying_symbol"] and pd.notna(instruments_df.loc[j,"expiry_date"]):
+            expiry_date=instruments_df.loc[j,"expiry_date"]
+            expiry_date=int(expiry_date.replace("-",""))
+            min_date=int(min_date)
+            if expiry_date<min_date:
+                min_date=expiry_date
+            
+    #min_date=int(min_date.replace("-",""))
+    min_date=str(min_date)
+    year,mon=month_year_calculator(min_date)
+            
+    ltp_future_symbol=exchange+"_"+symbol+year+mon+"FUT"
+    ltp_response = groww.get_ltp(
+    segment=groww.SEGMENT_FNO,
+    exchange_trading_symbols=ltp_future_symbol
+    )
+    ltp_earliest_future=ltp_response[ltp_future_symbol]
 
     if scenario==scenario1:
         for i in range(len(previous_volatility_file)):
@@ -154,7 +284,7 @@ def run_risk_analysis(symbol, exp_date, scenario, u_specified_price, buy_sell):
                 previous_underlying_volatility=previous_volatility_file.loc[i," Current Day Underlying Daily Volatility (E) = Sqrt (0.995*D*D + 0.005* C*C)"]
                 current_underlying_volatility=math.sqrt((0.995*previous_underlying_volatility*previous_underlying_volatility)+(0.005*log_return*log_return))
                 underlying_annual_volatility=current_underlying_volatility*math.sqrt(365)
-                current_futures_closing_price=float(ltp)
+                current_futures_closing_price=float(ltp_earliest_future)
                 previous_futures_closing_price=previous_volatility_file.loc[i," Futures Close Price (G)"]
                 futures_log_return=math.log(float(current_futures_closing_price)/float(previous_futures_closing_price))
                 previous_futures_volatility=previous_volatility_file.loc[i," Current Day Futures Daily Volatility (K) = Sqrt (0.995*J*J + 0.005* I*I)"]
@@ -186,7 +316,7 @@ def run_risk_analysis(symbol, exp_date, scenario, u_specified_price, buy_sell):
 
         price_scan_range_multiplier=6*applicable_daily_volatility*math.sqrt(2)    
         volatility_scan_range=applicable_annual_volatility*0.25
-        ltp=current_futures_closing_price
+        ltp=(ltp*u_specified_price)/latest_price
         
         
 
@@ -256,9 +386,304 @@ def run_risk_analysis(symbol, exp_date, scenario, u_specified_price, buy_sell):
 
     total_margin=(elm_rate+initial_var)
     return {
-        "Initial VAR": round(initial_var,2), 
-        "ELM Margin": round(elm_rate,2),
-        "Total Margin": round(total_margin,2)
+        "Initial VAR": initial_var, 
+        "ELM Margin": elm_rate,
+        "Total Margin": total_margin
+    }
+#================================================================
+#Risk Analysis for options
+def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_sell,strike_price,option_type):
+    scenario1 = "Current SPAN"
+    scenario2 = "What-if Analysis" 
+    
+    expiry_date_opt=exp_date
+    expiry_date_opt=int(expiry_date_opt.replace("-",""))
+    expiry_date_opt=str(expiry_date_opt)
+    year_ex=int(expiry_date_opt[0:4])
+    month_ex=int(expiry_date_opt[4:6])
+    day_ex=int(expiry_date_opt[6:8])
+
+    today = date.today()    
+    today=str(today).replace("-","")
+    year_t=int(today[0:4])
+    month_t=int(today[4:6])
+    day_t=int(today[6:8])
+
+    expiry_date_o=date(year_ex, month_ex, day_ex)
+    today=date(year_t, month_t, day_t)
+    diff=expiry_date_o - today
+    day_diff=int(diff.days)
+    t=(day_diff+1)/365
+    
+    exp_date=int(exp_date.replace("-",""))
+    exp_date=str(exp_date)
+    year,mon=month_year_calculator(exp_date)
+    
+    exchange="NSE"
+
+    ltp_symbol=exchange+"_"+symbol+year+mon+"FUT"
+        
+    ltp_response = groww.get_ltp(
+    segment=groww.SEGMENT_FNO,
+    exchange_trading_symbols=ltp_symbol
+    )
+    ltp=ltp_response[ltp_symbol]
+
+    min_date=10000000000
+    for j in range(len(instruments_df)):
+        if symbol==instruments_df.loc[j,"underlying_symbol"] and pd.notna(instruments_df.loc[j,"expiry_date"]):
+            expiry_date=instruments_df.loc[j,"expiry_date"]
+            expiry_date=int(expiry_date.replace("-",""))
+            min_date=int(min_date)
+            if expiry_date<min_date:
+                min_date=expiry_date
+    
+    #min_date=int(min_date.replace("-",""))
+    min_date=str(min_date)
+    year,mon=month_year_calculator(min_date)
+    
+    ltp_symbol=exchange+"_"+symbol+year+mon+"FUT"
+        
+    ltp_response = groww.get_ltp(
+    segment=groww.SEGMENT_FNO,
+    exchange_trading_symbols=ltp_symbol
+    )
+    ltp_earliest_future=ltp_response[ltp_symbol]
+
+    symbol_underlying=exchange+"_"+symbol
+    ltp_underlying=groww.get_ltp(
+    segment=groww.SEGMENT_CASH,
+    exchange_trading_symbols=symbol_underlying
+    )
+    latest_price = ltp_underlying[symbol_underlying]
+
+    if option_type=="Call":
+        opt_type="C"
+    else:
+        opt_type="P"
+    
+
+    exp_date=int(exp_date.replace("-",""))
+    exp_date=str(exp_date)
+    year,mon=month_year_calculator(exp_date)
+    option_symbol=exchange+"_"+symbol+year+mon+str(int(strike_price))+opt_type
+    
+    date_opt=str(year_ex)+"-"+str(expiry_date_opt[4:6])+"-"+str(day_ex)
+   
+    option_chain_response = groww.get_option_chain(
+        exchange=groww.EXCHANGE_NSE,
+        underlying=symbol,
+        expiry_date= date_opt
+    )
+
+    option_chain_response=pd.DataFrame(option_chain_response)
+
+    parsed_rows = []
+
+    for strike, options in option_chain_response.get('strikes', {}).items():
+        ce = options.get('CE', {})
+        pe = options.get('PE', {})
+        
+        record = {
+            "Strike": strike,
+            "CE_Contract": ce.get('trading_symbol'),
+            "CE_IV": ce.get('greeks', {}).get('iv'),
+            "CE Price":ce.get('ltp'),
+            "CE_Volume": ce.get('volume'),
+            "PE_Contract": pe.get('trading_symbol'),
+            "PE_IV": pe.get('greeks', {}).get('iv'),
+            "PE_Volume": pe.get('volume'),
+            "PE Price":pe.get('ltp')
+        }
+        parsed_rows.append(record)
+
+    # Display as a clean table
+    df = pd.DataFrame(parsed_rows)
+
+    relevant_call_strike=[]
+    relevant_put_strike=[]
+    for i in range(len(df)):
+        if float(df.loc[i,"Strike"])>=latest_price and float(df.loc[i,"CE_Volume"])>0:
+            relevant_call_strike.append((float(df.loc[i,"Strike"]),float(df.loc[i,"CE_IV"])/100))
+        elif float(df.loc[i,"Strike"])<latest_price and float(df.loc[i,"PE_Volume"])>0:
+            relevant_put_strike.append((float(df.loc[i,"Strike"]),float(df.loc[i,"PE_IV"])/100))
+
+    combined_strikes = sorted(relevant_call_strike + relevant_put_strike, key=lambda x: x[0])
+    # Extract the entire 1st column (Strike Prices) -> index 0
+    strike_column = [item[0] for item in combined_strikes]
+
+    # Extract the entire 2nd column (IV Values) -> index 1
+    iv_column = [item[1] for item in combined_strikes]
+
+    curve_fit=np.polyfit(strike_column,iv_column,2)
+    iv_option=np.polyval(curve_fit, float(strike_price))
+    ltp_option=merton_price(latest_price,float(strike_price),t,risk_free_rate_mibor,0,iv_option,option_type=opt_type)
+
+    if scenario==scenario1:
+        for i in range(len(previous_volatility_file)):
+            if symbol==previous_volatility_file.loc[i," Symbol"]:
+                previous_close=previous_volatility_file.loc[i," Underlying Close Price (A)"]
+                log_return=math.log(float(latest_price)/float(previous_close))
+                previous_underlying_volatility=previous_volatility_file.loc[i," Current Day Underlying Daily Volatility (E) = Sqrt (0.995*D*D + 0.005* C*C)"]
+                current_underlying_volatility=math.sqrt((0.995*previous_underlying_volatility*previous_underlying_volatility)+(0.005*log_return*log_return))
+                underlying_annual_volatility=current_underlying_volatility*math.sqrt(365)
+                current_futures_closing_price=float(ltp_earliest_future)
+                previous_futures_closing_price=previous_volatility_file.loc[i," Futures Close Price (G)"]
+                futures_log_return=math.log(float(current_futures_closing_price)/float(previous_futures_closing_price))
+                previous_futures_volatility=previous_volatility_file.loc[i," Current Day Futures Daily Volatility (K) = Sqrt (0.995*J*J + 0.005* I*I)"]
+                current_futures_volatility=math.sqrt((0.995*float(previous_futures_volatility)*float(previous_futures_volatility))+(0.005*float(futures_log_return)*float(futures_log_return)))
+                futures_annual_volatility=current_futures_volatility*math.sqrt(365)
+                applicable_daily_volatility=np.maximum(float(current_underlying_volatility),float(current_futures_volatility))
+                applicable_annual_volatility=np.maximum(float(underlying_annual_volatility),float(futures_annual_volatility))
+
+        price_scan_range_multiplier=6*applicable_daily_volatility*math.sqrt(2)    
+        #volatility_scan_range=applicable_annual_volatility*0.25
+        
+        
+    elif scenario==scenario2:
+        for i in range(len(previous_volatility_file)):
+            if symbol==previous_volatility_file.loc[i," Symbol"]:
+                previous_close=previous_volatility_file.loc[i," Underlying Close Price (A)"]
+                log_return=math.log(float(u_specified_price)/float(previous_close))
+                previous_underlying_volatility=previous_volatility_file.loc[i," Current Day Underlying Daily Volatility (E) = Sqrt (0.995*D*D + 0.005* C*C)"]
+                current_underlying_volatility=math.sqrt((0.995*previous_underlying_volatility*previous_underlying_volatility)+(0.005*log_return*log_return))
+                underlying_annual_volatility=current_underlying_volatility*math.sqrt(365)
+                previous_futures_closing_price=previous_volatility_file.loc[i," Futures Close Price (G)"]
+                current_futures_closing_price=(previous_futures_closing_price*u_specified_price)/previous_close
+                futures_log_return=math.log(float(current_futures_closing_price)/float(previous_futures_closing_price))
+                previous_futures_volatility=previous_volatility_file.loc[i," Current Day Futures Daily Volatility (K) = Sqrt (0.995*J*J + 0.005* I*I)"]
+                current_futures_volatility=math.sqrt((0.995*float(previous_futures_volatility)*float(previous_futures_volatility))+(0.005*float(futures_log_return)*float(futures_log_return)))
+                futures_annual_volatility=current_futures_volatility*math.sqrt(365)
+                applicable_daily_volatility=np.maximum(float(current_underlying_volatility),float(current_futures_volatility))
+                applicable_annual_volatility=np.maximum(float(underlying_annual_volatility),float(futures_annual_volatility))
+
+        price_scan_range_multiplier=6*applicable_daily_volatility*math.sqrt(2)    
+        #volatility_scan_range=applicable_annual_volatility*0.25
+        ltp=(ltp*u_specified_price)/latest_price
+        ltp_option,iv_option,xxx=simulate_call_with_exact_curve_slope(u_specified_price,latest_price,float(strike_price),t,risk_free_rate_mibor,0,curve_fit)
+        
+    zz=0
+    for i in range(len(market_lot_file)):
+        if market_lot_file.loc[i,"SYMBOL    "].replace(" ","")==symbol:
+            lot_size=float(market_lot_file.iloc[i,2])
+            zz=i
+
+    if zz<5:
+        if price_scan_range_multiplier<0.093:
+            price_scan_range_multiplier=0.093
+        #if volatility_scan_range<0.04:
+                #volatility_scan_range=0.04
+    elif zz>5:
+        if price_scan_range_multiplier<0.142:
+            price_scan_range_multiplier=0.142
+        #if volatility_scan_range<0.1:
+                #volatility_scan_range=0.01
+
+    price_scan=ltp*price_scan_range_multiplier
+
+    
+    #iv=calculate_iv_merton(float(ltp_option),float(strike_price),float(latest_price),t,risk_free_rate_mibor,0,option_type=opt_type)
+    #composite_delta=calculate_composite_delta(ltp,float(strike_price),t,risk_free_rate_mibor,iv,price_scan,option_type=opt_type)
+
+    volatility_scan_range=abs(0.25*iv_option)
+
+    zz=0
+    for i in range(len(market_lot_file)):
+        if market_lot_file.loc[i,"SYMBOL    "].replace(" ","")==symbol:
+            lot_size=float(market_lot_file.iloc[i,2])
+            zz=i
+
+    if zz<5:
+        if volatility_scan_range<0.04:
+            volatility_scan_range=0.04
+    elif zz>5:
+        if volatility_scan_range<0.1:
+            volatility_scan_range=0.1
+
+    risk_array=[]
+
+    scenarios = [
+        (0, 1.25),       (0, 0.75),        # 1, 2: Price Unchanged
+        (1/3, 1.25),     (1/3, 0.75),      # 3, 4: Price Up 1/3
+        (-1/3, 1.25),    (-1/3, 0.75),     # 5, 6: Price Down 1/3
+        (2/3, 1.25),     (2/3, 0.75),      # 7, 8: Price Up 2/3
+        (-2/3, 1.25),    (-2/3, 0.75),     # 9, 10: Price Down 2/3
+        (1, 1.25),       (1, 0.75),        # 11, 12: Price Up Full PSR
+        (-1, 1.25),      (-1, 0.75),       # 13, 14: Price Down Full PSR
+        (2, 1.00),       (-2, 1.00)        # 15, 16: Extreme moves (No Vol change, scaled later)
+    ]
+
+    for idx, (price_frac, vol_scale) in enumerate(scenarios, start=1):
+        # Calculate scenario specific underlying spot and IV
+        sim_spot = ltp + (price_frac * price_scan)
+        sim_iv = iv_option * vol_scale
+        
+        if t-2/365<0:
+            t_use=0
+        else:
+            t_use=t
+
+        # Calculate new option price
+        sim_price = calculate_price_with_dividend(
+            sim_spot, float(strike_price), t_use, risk_free_rate_mibor, 0, sim_iv, option_type=opt_type)
+        
+        # Calculate risk array value (Gain/Loss relative to current option price)
+        # Risk arrays track the change in value: Current Price - New Price
+        loss_gain = ltp_option - sim_price
+        
+        # Apply 35% scaling for extreme scenarios 15 and 16 per exchange rules
+        if idx in [15, 16]:
+            loss_gain = loss_gain * 0.35
+            
+        risk_array.append(loss_gain)
+
+
+    if buy_sell=="Buy":
+        initial_var=max(risk_array)*lot_size
+    elif buy_sell=="Sell":
+        initial_var=abs(min(risk_array)*lot_size)+ltp_option*lot_size
+    #print(min(risk_array))
+
+    if option_type=="Call":
+        if float(strike_price)>1.1*latest_price:
+            elm_rate=0.03*latest_price*lot_size
+        else:
+            0.02*latest_price*lot_size
+
+        for k in range(len(exposure_file)):
+            if exposure_file.loc[k,"Symbol"]==symbol and float(strike_price)>1.3*latest_price and exposure_file.loc[k,"Instrument Type"]=="OTM":
+                elm_rate=latest_price*lot_size*exposure_file.loc[k,"Total applicable ELM%"]/100
+            elif exposure_file.loc[k,"Symbol"]==symbol and float(strike_price)<=1.3*latest_price and exposure_file.loc[k,"Instrument Type"]=="OTH":
+                elm_rate=latest_price*lot_size*exposure_file.loc[k,"Total applicable ELM%"]/100
+
+    elif option_type=="Put":
+        if float(strike_price)<0.9*latest_price:
+            elm_rate=0.03*latest_price*lot_size
+        else:
+            0.02*latest_price*lot_size
+
+        for k in range(len(exposure_file)):
+            if exposure_file.loc[k,"Symbol"]==symbol and float(strike_price)<0.7*latest_price and exposure_file.loc[k,"Instrument Type"]=="OTM":
+                elm_rate=latest_price*lot_size*exposure_file.loc[k,"Total applicable ELM%"]/100
+            elif exposure_file.loc[k,"Symbol"]==symbol and float(strike_price)>=0.7*latest_price and exposure_file.loc[k,"Instrument Type"]=="OTH":
+                elm_rate=latest_price*lot_size*exposure_file.loc[k,"Total applicable ELM%"]/100
+
+    
+    if buy_sell=="Buy":
+        initial_var=0
+        elm_rate=0
+        premium_rate=-1
+    else:
+        premium_rate=1
+    
+    premium=premium_rate*lot_size*ltp_option
+
+    total_margin=(elm_rate+initial_var)
+    return {
+        "Premium":premium,
+        "Initial VAR": initial_var, 
+        "ELM Margin": elm_rate,
+        "Total Margin": total_margin
     }
 
 #===============================================================
@@ -277,9 +702,21 @@ st.title("📊 Risk Scenario Analyzer")
 symbols = list(underlying_list.keys())
 symbol = st.selectbox("Select Underlying", symbols)
 
+instrument = st.selectbox("Instrument", ["Future", "Option"])
+
+if instrument=="Option":
+    option_type=st.selectbox("Option Type", ["Call", "Put"])
+
 # --- 2. Select Expiry ---
 expiry_options = expiry_list.get(symbol, [])
 expiry = st.selectbox("Select Expiry Date", expiry_options)
+
+if instrument=="Option" and option_type=="Call":
+    call_strike=strikes_dict_c.get((symbol,expiry),[])
+    strk=st.selectbox("Select Strike Price",call_strike)
+elif instrument=="Option" and option_type=="Put":
+    put_strike=strikes_dict_p.get((symbol,expiry),[])
+    strk=st.selectbox("Select Strike Price",put_strike)
 
 # --- 3. Scenario Selection ---
 scenario = st.radio(
@@ -306,6 +743,7 @@ if st.button("Run Analysis"):
     st.write(f"Symbol: {symbol}")
     st.write(f"Expiry: {expiry}")
     st.write(f"Scenario: {scenario}")
+    
 
     if scenario == "What-if Analysis":
         st.write(f"User Price: {u_specified_price}")
@@ -313,25 +751,28 @@ if st.button("Run Analysis"):
     # ---------------- CORE LOGIC CALL ----------------
     # You should wrap your large script into a function like:
 
-    result = run_risk_analysis(
-        symbol,
-        expiry,
-        scenario,
-        u_specified_price,
-        buy_sell
-    )
-    
-    result_df = pd.DataFrame({
-    "Metric": list(result.keys()),
-    "Value": list(result.values())
-    })
-
-    st.subheader("📊 Results")
-    st.dataframe(result_df)
+    if instrument=="Future":
+        result = run_risk_analysis_future(
+            symbol,
+            expiry,
+            scenario,
+            u_specified_price,
+            buy_sell
+        )
+    else:
+        result = run_risk_analysis_option(
+            symbol,
+            expiry,
+            scenario,
+            u_specified_price,
+            buy_sell,
+            strk,
+            option_type
+        )
 
     # --- Output ---
-    #st.write("### Results")
-    #st.json(result)
+    st.write("### Results")
+    st.json(result)
         
 
 
