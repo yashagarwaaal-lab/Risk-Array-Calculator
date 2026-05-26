@@ -51,22 +51,7 @@ if not previous_volatility_file_path:
 
 market_lot_file = pd.read_csv(market_lot_file_path)
 #=======================================================================================
-#Getting the instruments and expiry dates from Groww
-instruments_df = groww.get_all_instruments()
-instruments_df.to_csv(storage_path + "/instruments.csv", index=False)
-#instruments_df.to_pickle(storage_path + "/instruments.pkl")
-#with gzip.open(storage_path + "/instruments.pkl.gz", "wb") as f:
-    #pickle.dump(instruments_df, f)
-
-
-
-instruments_df = instruments_df.dropna(subset=['expiry_date']).copy()
-instruments_df['expiry_date_int'] = instruments_df['expiry_date'].str.replace("-", "").astype(int)
-instruments_df = instruments_df[(instruments_df['expiry_date_int'] >= today) & (instruments_df['segment'] =="FNO")]
-
-cols=['exchange', 'instrument_type', 'underlying_symbol', 'expiry_date','strike_price']
-instruments_df = instruments_df[cols]
-#instruments_df.to_csv(storage_path + "/instruments.csv", index=False)
+instruments_df = pd.read_csv("instruments.csv")
 #========================================================================================
 #Getting the list of all the instruments
 underlying_list={}
