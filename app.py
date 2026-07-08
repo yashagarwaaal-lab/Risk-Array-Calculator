@@ -707,7 +707,7 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
         ltp_option=merton_price(u_specified_price,float(strike_price),t,risk_free_rate_mibor,0,iv_option,option_type=opt_type)
         latest_price=u_specified_price
 
-
+    volatility_scan_range=abs(0.25*applicable_annual_volatility)#iv_option
     zz=0
     for i in range(len(market_lot_file)):
         if market_lot_file.loc[i,"SYMBOL    "].replace(" ","")==symbol:
@@ -737,7 +737,7 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
     #iv=calculate_iv_merton(float(ltp_option),float(strike_price),float(latest_price),t,risk_free_rate_mibor,0,option_type=opt_type)
     #composite_delta=calculate_composite_delta(ltp,float(strike_price),t,risk_free_rate_mibor,iv,price_scan,option_type=opt_type)
 
-    volatility_scan_range=abs(0.25*applicable_annual_volatility)#iv_option
+    
 
     zz=0
     for i in range(len(market_lot_file)):
