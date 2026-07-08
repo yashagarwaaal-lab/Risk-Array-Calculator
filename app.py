@@ -655,7 +655,7 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
 
     curve_fit=np.polyfit(strike_column,iv_column,2)
     iv_option=np.polyval(curve_fit, float(strike_price))
-    #ltp_option=merton_price(latest_price,float(strike_price),t,risk_free_rate_mibor,0,iv_option,option_type=opt_type)
+    ltp_option=merton_price(latest_price,float(strike_price),t,risk_free_rate_mibor,0,iv_option,option_type=opt_type)
     #print(ltp_option)
 
     if scenario==scenario1:
