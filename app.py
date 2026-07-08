@@ -678,6 +678,7 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
         price_scan_range_multiplier=6*applicable_daily_volatility*math.sqrt(2)    
         #volatility_scan_range=applicable_annual_volatility*0.25
         iv_option=applicable_annual_volatility
+        ltp_option=merton_price(latest_price,float(strike_price),t,risk_free_rate_mibor,0,iv_option,option_type=opt_type)
         
         
     elif scenario==scenario2:
