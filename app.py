@@ -134,7 +134,7 @@ expiry_list={}
 expiry_list = instruments_df[instruments_df['instrument_type'] == "FUT"].groupby('underlying_symbol')['expiry_date'].unique().to_dict()
 #=========================================================================================
 
-risk_free_rate_mibor=0.0666
+risk_free_rate_mibor=0.0649
 #==========================================================================================
 call_df=instruments_df[instruments_df["instrument_type"] == "CE"]
 strikes_dict_c = (
@@ -770,7 +770,7 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
             latest_price, float(strike_price), t, risk_free_rate_mibor, 0, iv_option, option_type=opt_type)
 
     for idx, (price_frac, vol_direction) in enumerate(scenarios, start=1):
-        sim_spot = ltp + (price_frac * price_scan)
+        sim_spot = latest_price + (price_frac * price_scan)
         if vol_direction == 1:
             sim_iv = iv_option + volatility_scan_range
         elif vol_direction == -1:
