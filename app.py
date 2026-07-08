@@ -655,7 +655,7 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
 
     curve_fit=np.polyfit(strike_column,iv_column,2)
     iv_option=np.polyval(curve_fit, float(strike_price))
-    ltp_option=merton_price(latest_price,float(strike_price),t,risk_free_rate_mibor,0,iv_option,option_type=opt_type)
+    #ltp_option=merton_price(latest_price,float(strike_price),t,risk_free_rate_mibor,0,iv_option,option_type=opt_type)
     #print(ltp_option)
 
     if scenario==scenario1:
@@ -704,6 +704,8 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
         ltp_fartest_future=(ltp_fartest_future*u_specified_price)/latest_price
         ltp_option,iv_option,xxx=simulate_option_with_exact_curve_slope(u_specified_price,latest_price,float(strike_price),t,risk_free_rate_mibor,0,curve_fit,option_type=opt_type)
         iv_option=applicable_annual_volatility
+        ltp_option=merton_price(u_specified_price,float(strike_price),t,risk_free_rate_mibor,0,iv_option,option_type=opt_type)
+        latest_price=u_specified_price
 
 
     zz=0
@@ -765,7 +767,7 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
     ]
 
     therotical_option_price=calculate_price_with_dividend(
-            ltp, float(strike_price), t, risk_free_rate_mibor, 0, iv_option, option_type=opt_type)
+            latest_price, float(strike_price), t, risk_free_rate_mibor, 0, iv_option, option_type=opt_type)
 
     for idx, (price_frac, vol_direction) in enumerate(scenarios, start=1):
         sim_spot = ltp + (price_frac * price_scan)
