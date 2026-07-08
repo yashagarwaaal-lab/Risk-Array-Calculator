@@ -4,3 +4,4 @@ numpy
 yfinance
 scipy
 growwapi
+requests
