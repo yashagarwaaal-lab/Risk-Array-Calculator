@@ -906,7 +906,7 @@ buy_sell = st.selectbox("Position Type", ["Buy", "Sell"])
 qty = st.number_input("Quantity", min_value=1, value=1)
 st.markdown("Lot Size")
 #print(symbol)
-st.write(lot_size_dict.get(symbol,0))
+#st.write(lot_size_dict.get(symbol,0))
 
 if st.button("Add Order"):
     st.session_state.orders.append({
