@@ -411,6 +411,8 @@ def run_risk_analysis_future(symbol, exp_date, scenario, u_specified_price, buy_
         volatility_scan_range=applicable_annual_volatility*0.25
         ltp=(ltp*u_specified_price)/latest_price
         ltp_fartest_future=(ltp_fartest_future*u_specified_price)/latest_price
+        latest_price=u_specified_price
+        
         
         
 
@@ -434,9 +436,9 @@ def run_risk_analysis_future(symbol, exp_date, scenario, u_specified_price, buy_
                 volatility_scan_range=0.01
 
     if t_psr>0:
-        price_scan=ltp*price_scan_range_multiplier*(1+risk_free_rate_mibor*t_psr)
+        price_scan=latest_price*price_scan_range_multiplier*(1+risk_free_rate_mibor*t_psr)
     else:
-        price_scan=ltp*price_scan_range_multiplier
+        price_scan=latest_price*price_scan_range_multiplier
 
     risk_array=[]
 
@@ -835,7 +837,9 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
         premium_rate=-1
     else:
         premium_rate=1
-    
+
+    if ltp_option<0.05:
+        ltp_option=0.05
     premium=premium_rate*lot_size*ltp_option
 
     total_margin=(elm_rate+initial_var)
