@@ -519,7 +519,7 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
     today=date(year_t, month_t, day_t)
     diff=expiry_date_o - today
     day_diff=int(diff.days)
-    t=(day_diff)/365
+    t=(day_diff+1)/365
     #print(t)
     exp_date=int(exp_date.replace("-",""))
     exp_date=str(exp_date)
