@@ -753,8 +753,6 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
             volatility_scan_range=0.1
 
     risk_array=[]
-
-
     scenarios = [
         (0,  1),  (0, -1),
         (1/3,  1), (1/3, -1),
@@ -769,6 +767,11 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
     therotical_option_price=calculate_price_with_dividend(
             latest_price, float(strike_price), t, risk_free_rate_mibor, 0, iv_option, option_type=opt_type)
 
+    if t-2/365<0:
+        t_use=0
+    else:
+        t_use=t-2/365
+    
     for idx, (price_frac, vol_direction) in enumerate(scenarios, start=1):
         sim_spot = latest_price + (price_frac * price_scan)
         if vol_direction == 1:
@@ -778,14 +781,9 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
         else:
             sim_iv = iv_option
         
-        if t-2/365<0:
-            t_use=0
-        else:
-            t_use=t-2/365
-
         # Calculate new option price
         sim_price = calculate_price_with_dividend(
-            sim_spot, float(strike_price), t, risk_free_rate_mibor, 0, sim_iv, option_type=opt_type)
+            sim_spot, float(strike_price), t_use, risk_free_rate_mibor, 0, sim_iv, option_type=opt_type)
         
         # Calculate risk array value (Gain/Loss relative to current option price)
         # Risk arrays track the change in value: Current Price - New Price
