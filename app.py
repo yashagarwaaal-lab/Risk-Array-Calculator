@@ -729,10 +729,8 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
                 #volatility_scan_range=0.01
             ltp_fartest_future=ltp_fartest_future*0.02
 
-    if t>0:
-        price_scan=latest_price*price_scan_range_multiplier*(1+risk_free_rate_mibor*t)
-    else:
-        price_scan=latest_price*price_scan_range_multiplier
+
+    price_scan=latest_price*price_scan_range_multiplier
 
     composite_delta=calculate_composite_delta(ltp,float(strike_price),t,risk_free_rate_mibor,iv_option,price_scan,option_type=opt_type)
     
