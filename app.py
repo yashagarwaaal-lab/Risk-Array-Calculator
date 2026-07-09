@@ -787,7 +787,7 @@ def run_risk_analysis_option(symbol, exp_date, scenario, u_specified_price, buy_
 
         # Calculate new option price
         sim_price = calculate_price_with_dividend(
-            sim_spot, float(strike_price), t_use, risk_free_rate_mibor, 0, sim_iv, option_type=opt_type)
+            sim_spot, float(strike_price), t, risk_free_rate_mibor, 0, sim_iv, option_type=opt_type)
         
         # Calculate risk array value (Gain/Loss relative to current option price)
         # Risk arrays track the change in value: Current Price - New Price
