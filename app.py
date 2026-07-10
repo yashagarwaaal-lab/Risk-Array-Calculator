@@ -134,7 +134,7 @@ expiry_list={}
 expiry_list = instruments_df[instruments_df['instrument_type'] == "FUT"].groupby('underlying_symbol')['expiry_date'].unique().to_dict()
 #=========================================================================================
 
-risk_free_rate_mibor=0.0649
+risk_free_rate_mibor=0.0651
 #==========================================================================================
 call_df=instruments_df[instruments_df["instrument_type"] == "CE"]
 strikes_dict_c = (
