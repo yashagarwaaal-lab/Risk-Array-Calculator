@@ -303,7 +303,7 @@ def run_risk_analysis_future(symbol, exp_date, scenario, u_specified_price, buy_
     today_psr=date(today_psr_year, today_psr_month, today_psr_day)
     diff=expiry_date_psr - today_psr
     day_diff_psr=int(diff.days)
-    t_psr=(day_diff)/365
+    t_psr=(day_diff_psr)/365
 
 
     exp_date=int(exp_date.replace("-",""))
